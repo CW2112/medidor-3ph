@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<!-- ==========================================================================
+  dashboard_nube.html  -  Dashboard del medidor "desde cualquier lado" (MQTT).
+
+  Se suscribe por MQTT sobre WebSocket (WSS) a un broker en la nube y muestra
+  las medidas que publica el ESP32 (o simulador_mqtt.py). Se abre en cualquier
+  navegador, en cualquier red -> no necesita estar en la red de la placa.
+
+  Publicalo en GitHub Pages / Netlify (o abrilo local) para acceso global.
+=========================================================================== -->
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medidor 3PH - Monitoreo en la nube</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+ body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#0B1C2E;color:#CFE0F0}
+ .wrap{max-width:1000px;margin:0 auto;padding:16px}
+ header{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+ h1{font-size:24px;margin:0;color:#EAF3FC}
+ .sub{color:#7E97AE;font-size:12px}
+ .clock{color:#7E97AE;font-size:12px;line-height:1.4}
+ .estado{margin-left:auto;padding:6px 14px;border-radius:15px;background:#12293F;
+   border:1px solid #25456A;font-weight:bold;font-size:13px}
+ .dot{display:inline-block;width:10px;height:10px;border-radius:50%;
+   background:#E5736B;margin-right:6px;vertical-align:middle}
+ .acc{height:2px;background:#4FA3E0;margin:10px 0 14px}
+ table{width:100%;border-collapse:collapse;background:#12293F;border:1px solid #25456A}
+ th{background:#204B75;color:#fff;padding:10px;font-size:14px}
+ td{padding:8px 10px;text-align:center;border-top:1px solid #25456A;
+   font-family:Consolas,monospace;font-size:15px;color:#EAF3FC}
+ td.name{text-align:right;background:#1B3A5B;color:#CFE0F0;
+   font-family:'Segoe UI',Arial;width:30%}
+ tr:nth-child(even) td:not(.name){background:#102A41}
+ td.scalar{color:#8CCBF7;font-weight:bold}
+ .botones{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+ .botones button{flex:1;min-width:150px;background:#204B75;color:#EAF3FC;border:none;
+   border-radius:13px;padding:12px;font-size:13px;font-weight:bold;cursor:pointer;
+   font-family:inherit}
+ .botones button:hover{background:#2C649B}
+ footer{color:#7E97AE;font-size:12px;margin-top:14px;text-align:center;line-height:1.6}
+ footer b{color:#8CCBF7}
+ .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
+   align-items:center;justify-content:center;z-index:10}
+ .modal.show{display:flex}
+ .card{background:#12293F;border:1px solid #25456A;border-radius:12px;padding:16px;
+   max-width:600px;width:90%}
+ .mtop{display:flex;justify-content:space-between;align-items:center;
+   margin-bottom:10px;color:#EAF3FC;font-size:15px}
+ .mtop span{cursor:pointer;color:#8CCBF7;font-size:20px}
+ select{background:#0F2338;color:#CFE0F0;border:1px solid #25456A;padding:6px;
+   border-radius:6px;font-family:inherit}
+ canvas{width:100%;height:260px;background:#0F2338;border:1px solid #25456A;
+   border-radius:6px;margin-top:10px}
+ #logtxt{background:#08131F;color:#BFD4EA;font-family:Consolas,monospace;font-size:12px;
+   padding:10px;border-radius:6px;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0}
+</style></head>
+<body><div class="wrap">
+ <header>
+   <div class="clock" id="clock">Fecha --<br>Hora --</div>
+   <div><h1>Monitoreo en tiempo real</h1>
+        <div class="sub">Medidor de calidad de energia &middot; via MQTT (nube)</div></div>
+   <div class="estado" id="estado"><span class="dot" id="dot"></span>Conectando...</div>
+ </header>
+ <div class="acc"></div>
+ <table><thead><tr>
+   <th style="text-align:left">Magnitud</th><th>L1</th><th>L2</th><th>L3</th><th>N</th>
+ </tr></thead><tbody id="cuerpo"></tbody></table>
+ <div class="botones">
+   <button onclick="cfgRefresco()">Tasa de refresco</button>
+   <button onclick="abrirSeguimiento()">Seguimiento de variables</button>
+   <button onclick="descargar()">Descarga de datos</button>
+   <button onclick="verLogs()">Ver logs</button>
+ </div>
+ <footer>Broker: <b>broker.hivemq.com</b> (WSS 8884) &nbsp; | &nbsp;
+   Topic: <b id="ftopic"></b></footer>
+
+ <div id="modalSeg" class="modal"><div class="card">
+   <div class="mtop"><b>Seguimiento de variables</b>
+     <span onclick="cerrar('modalSeg')">&times;</span></div>
+   <select id="selVar" onchange="dibujarSeg()"></select>
+   <canvas id="cv" width="540" height="260"></canvas>
+ </div></div>
+ <div id="modalLog" class="modal"><div class="card">
+   <div class="mtop"><b>Logs de recepcion</b>
+     <span onclick="cerrar('modalLog')">&times;</span></div>
+   <pre id="logtxt"></pre>
+ </div></div>
+</div>
+<script>
+ var BROKER="wss://broker.hivemq.com:8884/mqtt";
+ var TOPIC="medidor3ph/utnfra/9f2a/medidas";
+ document.getElementById("ftopic").textContent=TOPIC;
+
+ var FILAS=[["Vpp (Volt)","vpp",0,1],["Vef (Volt)","vef",0,1],
+  ["Vmax (Volt)","vmax",0,1],["Vmin (Volt)","vmin",0,1],
+  ["Ief (Amp)","ief",0,2],["Ip (Amp)","ip",0,2],
+  ["Pot (Watt)","pot",0,0],["PotReac (VAr)","potreac",0,0],
+  ["PotAp (VA)","potap",0,0],["Frecuencia (Hertz)","frecuencia",1,2],
+  ["Cos Phi","cos_phi",1,2],["THD (%)","thd",1,1]];
+ var COLS=["L1","L2","L3","N"];
+ var hist={}, registros=[], logs=[];
+ var HCAP=120, RCAP=600, LCAP=200;
+ var minRender=0, lastRender=0;
+
+ var cuerpo=document.getElementById("cuerpo");
+ FILAS.forEach(function(f,ri){var tr=document.createElement("tr");
+  var n=document.createElement("td");n.className="name";n.textContent=f[0];tr.appendChild(n);
+  if(f[2]){var td=document.createElement("td");td.className="scalar";td.colSpan=4;
+   td.id="c"+ri+"s";td.textContent="--";tr.appendChild(td);}
+  else{for(var c=0;c<4;c++){var t=document.createElement("td");
+   t.id="c"+ri+"_"+c;t.textContent="--";tr.appendChild(t);}}
+  cuerpo.appendChild(tr);});
+
+ function fmt(v,d){return(typeof v==="number")?v.toFixed(d):"--";}
+ function set(id,txt){document.getElementById(id).textContent=txt;}
+ function push(k,val){(hist[k]=hist[k]||[]).push(val);if(hist[k].length>HCAP)hist[k].shift();}
+ function vars(){var o=[];FILAS.forEach(function(f){if(f[2])o.push(f[0]);
+   else COLS.forEach(function(c){o.push(f[0]+" "+c);});});return o;}
+ function estado(ok,txt){document.getElementById("dot").style.background=ok?"#46C88A":"#E5736B";
+   document.getElementById("estado").lastChild.textContent=txt||(ok?"En linea":"Sin conexion");}
+
+ function render(d){
+   FILAS.forEach(function(f,ri){var v=d[f[1]];
+    if(f[2])set("c"+ri+"s",fmt(v,f[3]));
+    else for(var c=0;c<4;c++){var x=(Array.isArray(v)&&v.length>c)?v[c]:null;
+      set("c"+ri+"_"+c,x==null?"--":fmt(x,f[3]));}});
+   if(document.getElementById("modalSeg").classList.contains("show"))dibujarSeg();
+   if(document.getElementById("modalLog").classList.contains("show"))
+     document.getElementById("logtxt").textContent=logs.join("\n");
+ }
+
+ function onData(d){
+   var ts=new Date().toLocaleTimeString();
+   FILAS.forEach(function(f,ri){var v=d[f[1]];
+     if(f[2]){if(typeof v==="number")push(f[0],v);}
+     else for(var c=0;c<4;c++){var x=(Array.isArray(v)&&v.length>c)?v[c]:null;
+       if(typeof x==="number")push(f[0]+" "+COLS[c],x);}});
+   registros.push({ts:ts,d:d});if(registros.length>RCAP)registros.shift();
+   logs.push("["+ts+"] "+JSON.stringify(d));if(logs.length>LCAP)logs.shift();
+   var now=Date.now();
+   if(now-lastRender>=minRender){lastRender=now;render(d);}
+ }
+
+ // --- MQTT sobre WebSocket ---
+ var client=mqtt.connect(BROKER,{reconnectPeriod:2000});
+ client.on("connect",function(){client.subscribe(TOPIC);estado(true,"En linea (MQTT)");});
+ client.on("reconnect",function(){estado(false,"Reconectando...");});
+ client.on("close",function(){estado(false,"Sin conexion");});
+ client.on("error",function(){estado(false,"Error MQTT");});
+ client.on("message",function(t,payload){try{onData(JSON.parse(payload.toString()));}catch(e){}});
+
+ function reloj(){var n=new Date();document.getElementById("clock").innerHTML=
+   "Fecha "+n.toLocaleDateString()+"<br>Hora "+n.toLocaleTimeString();}
+ setInterval(reloj,1000);reloj();
+
+ function cfgRefresco(){var v=prompt("Intervalo minimo de refresco de pantalla (ms):",minRender);
+   if(v!==null){v=parseInt(v);if(!isNaN(v)&&v>=0&&v<=60000){minRender=v;
+   alert("Refresco minimo: "+v+" ms (0 = cada mensaje)");}}}
+ function cerrar(id){document.getElementById(id).classList.remove("show");}
+ function abrirSeguimiento(){var s=document.getElementById("selVar");
+   if(!s.options.length){vars().forEach(function(nm){var o=document.createElement("option");
+     o.value=nm;o.textContent=nm;s.appendChild(o);});}
+   document.getElementById("modalSeg").classList.add("show");dibujarSeg();}
+ function dibujarSeg(){var cv=document.getElementById("cv"),x=cv.getContext("2d");
+   var w=cv.width,h=cv.height,m=34;x.clearRect(0,0,w,h);
+   x.strokeStyle="#25456A";x.lineWidth=1;
+   for(var i=0;i<5;i++){var y=m+(h-2*m)*i/4;x.beginPath();x.moveTo(m,y);x.lineTo(w-m,y);x.stroke();}
+   var nombre=document.getElementById("selVar").value;var dt=hist[nombre]||[];
+   if(dt.length<2){x.fillStyle="#7E97AE";x.font="13px Segoe UI";
+     x.fillText("Sin suficientes datos",w/2-70,h/2);return;}
+   var vmin=Math.min.apply(null,dt),vmax=Math.max.apply(null,dt),rng=(vmax-vmin)||1;
+   x.strokeStyle="#4FA3E0";x.lineWidth=2;x.beginPath();
+   dt.forEach(function(v,i){var px=m+(w-2*m)*i/(dt.length-1);
+     var py=h-m-(h-2*m)*(v-vmin)/rng;i?x.lineTo(px,py):x.moveTo(px,py);});
+   x.stroke();x.fillStyle="#7E97AE";x.font="10px Segoe UI";
+   x.fillText(vmax.toFixed(2),2,m+3);x.fillText(vmin.toFixed(2),2,h-m+3);
+   x.fillStyle="#8CCBF7";x.font="bold 12px Segoe UI";
+   x.fillText("actual "+dt[dt.length-1].toFixed(2),w-130,m+3);}
+ function verLogs(){document.getElementById("logtxt").textContent=logs.join("\n");
+   document.getElementById("modalLog").classList.add("show");}
+ function descargar(){if(!registros.length){alert("Aun no hay datos recibidos.");return;}
+   var cols=["timestamp"];FILAS.forEach(function(f){if(f[2])cols.push(f[1]);
+     else COLS.forEach(function(c){cols.push(f[1]+"_"+c);});});
+   var csv=cols.join(",")+"\n";
+   registros.forEach(function(reg){var row=[reg.ts];
+     FILAS.forEach(function(f){var v=reg.d[f[1]];
+       if(f[2])row.push(v==null?"":v);
+       else for(var c=0;c<4;c++)row.push((Array.isArray(v)&&v.length>c)?v[c]:"");});
+     csv+=row.join(",")+"\n";});
+   var blob=new Blob([csv],{type:"text/csv"});var a=document.createElement("a");
+   a.href=URL.createObjectURL(blob);a.download="medidas.csv";a.click();}
+</script></body></html>
