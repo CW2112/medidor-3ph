@@ -53,6 +53,13 @@
    border-radius:6px;margin-top:10px}
  #logtxt{background:#08131F;color:#BFD4EA;font-family:Consolas,monospace;font-size:12px;
    padding:10px;border-radius:6px;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0}
+ #conexbox{width:100%;box-sizing:border-box;padding:11px 14px;border-radius:10px;
+   border:1px solid #25456A;background:#12293F;color:#EAF3FC;font-weight:bold;
+   font-size:14px;text-align:center;margin-bottom:12px}
+ #reporte{display:none;background:#2E1620;border:1px solid #7A3B46;border-radius:10px;
+   padding:14px;margin-top:14px;color:#F0D9DE;font-size:13px;line-height:1.7}
+ #reporte h3{margin:0 0 10px;color:#F2B0BA;font-size:15px}
+ #reporte .val{font-family:Consolas,monospace;color:#EAF3FC}
 </style></head>
 <body><div class="wrap">
  <header>
@@ -62,6 +69,7 @@
    <div class="estado" id="estado"><span class="dot" id="dot"></span>Conectando...</div>
  </header>
  <div class="acc"></div>
+ <input id="conexbox" readonly value="Conectando con la placa...">
  <table><thead><tr>
    <th style="text-align:left">Magnitud</th><th>L1</th><th>L2</th><th>L3</th><th>N</th>
  </tr></thead><tbody id="cuerpo"></tbody></table>
@@ -71,6 +79,7 @@
    <button onclick="descargar()">Descarga de datos</button>
    <button onclick="verLogs()">Ver logs</button>
  </div>
+ <div id="reporte"></div>
  <footer>Broker: <b>broker.hivemq.com</b> (WSS 8884) &nbsp; | &nbsp;
    Topic: <b id="ftopic"></b></footer>
 
@@ -102,6 +111,7 @@
  var HCAP=120, RCAP=600, LCAP=200;
  var minRender=0, lastRender=0;
  var ultimoMsg=0, UMBRAL=6000;   // watchdog: ms sin datos -> "sin conexion"
+ var ultimoDato=null, ultimaHoraTxt="--", conectada=false;
 
  var cuerpo=document.getElementById("cuerpo");
  FILAS.forEach(function(f,ri){var tr=document.createElement("tr");
@@ -132,6 +142,9 @@
 
  function onData(d){
    ultimoMsg=Date.now();
+   ultimoDato=d; ultimaHoraTxt=new Date().toLocaleString();
+   if(!conectada){conectada=true;setConex(true);
+     document.getElementById("reporte").style.display="none";}
    var ts=new Date().toLocaleTimeString();
    FILAS.forEach(function(f,ri){var v=d[f[1]];
      if(f[2]){if(typeof v==="number")push(f[0],v);}
@@ -152,12 +165,31 @@
  client.on("error",function(){estado(false,"Error MQTT");});
  client.on("message",function(t,payload){try{onData(JSON.parse(payload.toString()));}catch(e){}});
 
- // Watchdog: si la placa deja de publicar, no mostrar valores viejos.
+ // Watchdog: si la placa deja de publicar, avisar y generar el reporte.
  function limpiarTabla(){FILAS.forEach(function(f,ri){
    if(f[2])set("c"+ri+"s","--");else for(var c=0;c<4;c++)set("c"+ri+"_"+c,"--");});}
+ function setConex(ok){var b=document.getElementById("conexbox");
+   b.value=ok?"● PLACA CONECTADA — recibiendo datos"
+             :("● PLACA DESCONECTADA — ultima recepcion: "+ultimaHoraTxt);
+   b.style.background=ok?"#12332A":"#3A1620";
+   b.style.borderColor=ok?"#2A7D5B":"#7A3B46";
+   b.style.color=ok?"#8CE0B0":"#F2B0BA";}
+ function formatearDatos(d){if(!d)return "(sin datos)";var C=["L1","L2","L3","N"];var o="";
+   FILAS.forEach(function(f){var v=d[f[1]];var t;
+     if(Array.isArray(v))t=v.map(function(x,i){return C[i]+"="+(typeof x==="number"?x.toFixed(f[3]):x);}).join("   ");
+     else t=(typeof v==="number"?v.toFixed(f[3]):v);
+     o+="<div>"+f[0]+": <span class='val'>"+t+"</span></div>";});return o;}
+ function generarReporte(){var r=document.getElementById("reporte");
+   r.innerHTML="<h3>⚠ Se dejo de recibir datos de la placa</h3>"+
+     "<div>Corte detectado: <b>"+new Date().toLocaleString()+"</b></div>"+
+     "<div>Ultima recepcion: <b>"+ultimaHoraTxt+"</b></div>"+
+     "<div style='margin-top:8px'>Ultima informacion recibida de la placa:</div>"+
+     "<div style='margin-top:4px'>"+formatearDatos(ultimoDato)+"</div>";
+   r.style.display="block";}
  setInterval(function(){
    if(ultimoMsg && (Date.now()-ultimoMsg)>UMBRAL){
-     estado(false,"Sin datos (placa sin publicar)");limpiarTabla();}
+     if(conectada){conectada=false;generarReporte();}
+     estado(false,"Sin datos (placa sin publicar)");setConex(false);limpiarTabla();}
  },1000);
 
  function reloj(){var n=new Date();document.getElementById("clock").innerHTML=

@@ -6,7 +6,8 @@
 #
 #  Uso:  click derecho -> Ejecutar con PowerShell   (o)   .\publicar_web.ps1
 # ============================================================================
-$ErrorActionPreference = "Stop"
+# "Continue": los warnings de git (LF/CRLF) escriben a stderr y no deben abortar.
+$ErrorActionPreference = "Continue"
 $repo = "C:\Users\carlo\Solucion-Claude\medidor-3ph-web"
 $fuente = "C:\Users\carlo\Solucion-Claude\esp32s3_eth_medidor\dashboard_nube.html"
 
