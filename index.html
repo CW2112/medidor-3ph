@@ -101,6 +101,7 @@
  var hist={}, registros=[], logs=[];
  var HCAP=120, RCAP=600, LCAP=200;
  var minRender=0, lastRender=0;
+ var ultimoMsg=0, UMBRAL=6000;   // watchdog: ms sin datos -> "sin conexion"
 
  var cuerpo=document.getElementById("cuerpo");
  FILAS.forEach(function(f,ri){var tr=document.createElement("tr");
@@ -130,6 +131,7 @@
  }
 
  function onData(d){
+   ultimoMsg=Date.now();
    var ts=new Date().toLocaleTimeString();
    FILAS.forEach(function(f,ri){var v=d[f[1]];
      if(f[2]){if(typeof v==="number")push(f[0],v);}
@@ -139,6 +141,7 @@
    logs.push("["+ts+"] "+JSON.stringify(d));if(logs.length>LCAP)logs.shift();
    var now=Date.now();
    if(now-lastRender>=minRender){lastRender=now;render(d);}
+   estado(true,"Recibiendo");
  }
 
  // --- MQTT sobre WebSocket ---
@@ -148,6 +151,14 @@
  client.on("close",function(){estado(false,"Sin conexion");});
  client.on("error",function(){estado(false,"Error MQTT");});
  client.on("message",function(t,payload){try{onData(JSON.parse(payload.toString()));}catch(e){}});
+
+ // Watchdog: si la placa deja de publicar, no mostrar valores viejos.
+ function limpiarTabla(){FILAS.forEach(function(f,ri){
+   if(f[2])set("c"+ri+"s","--");else for(var c=0;c<4;c++)set("c"+ri+"_"+c,"--");});}
+ setInterval(function(){
+   if(ultimoMsg && (Date.now()-ultimoMsg)>UMBRAL){
+     estado(false,"Sin datos (placa sin publicar)");limpiarTabla();}
+ },1000);
 
  function reloj(){var n=new Date();document.getElementById("clock").innerHTML=
    "Fecha "+n.toLocaleDateString()+"<br>Hora "+n.toLocaleTimeString();}
