@@ -76,6 +76,7 @@
  <div class="botones">
    <button onclick="cfgRefresco()">Tasa de refresco</button>
    <button onclick="abrirSeguimiento()">Seguimiento de variables</button>
+   <button onclick="abrirArmonicos()">Armonicos</button>
    <button onclick="descargar()">Descarga de datos</button>
    <button onclick="verLogs()">Ver logs</button>
  </div>
@@ -94,11 +95,36 @@
      <span onclick="cerrar('modalLog')">&times;</span></div>
    <pre id="logtxt"></pre>
  </div></div>
+ <div id="modalArm" class="modal"><div class="card" style="max-width:760px">
+   <div class="mtop"><b>Espectro de armonicos (1 al 50)</b>
+     <span onclick="cerrar('modalArm')">&times;</span></div>
+   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+     <span style="color:#7E97AE;font-size:13px">Canal:</span>
+     <select id="selArm"></select>
+     <button onclick="pedirArmonicos()" style="background:#204B75;color:#EAF3FC;border:none;
+       border-radius:8px;padding:7px 14px;font-family:inherit;font-weight:bold;cursor:pointer">
+       Pedir espectro</button>
+     <span id="armEstado" style="color:#7E97AE;font-size:12px">—</span>
+     <button onclick="descargarArm()" style="background:#12293F;color:#8CCBF7;border:1px solid #25456A;
+       border-radius:8px;padding:7px 12px;font-family:inherit;cursor:pointer">CSV</button>
+   </div>
+   <canvas id="cvArm" width="720" height="300"></canvas>
+   <div style="color:#7E97AE;font-size:11px;margin-top:6px">
+     Barras en % del fundamental (h1 = 100 %). THD del canal calculado sobre h2..h50.</div>
+ </div></div>
 </div>
 <script>
  var BROKER="wss://broker.hivemq.com:8884/mqtt";
  var TOPIC="medidor3ph/utnfra/9f2a/medidas";
+ var TOPIC_ARM_REQ="medidor3ph/utnfra/9f2a/armonicos/req";  // pedido -> placa
+ var TOPIC_ARM="medidor3ph/utnfra/9f2a/armonicos";          // espectro <- placa
  document.getElementById("ftopic").textContent=TOPIC;
+
+ // Canales con espectro de armonicos (ver firmware/parametros.py CANALES_ARM).
+ var CANALES_ARM=[["VA","Tension Fa"],["VB","Tension Fb"],["VC","Tension Fc"],
+                  ["IA","Corriente Fa"],["IB","Corriente Fb"],["IC","Corriente Fc"]];
+ var espArm=null;        // ultimo espectro recibido {canal,n,h:[...]}
+ var espTimer=null;      // watchdog del pedido de espectro
 
  // Nombres del front-end ADE9000 (ver firmware/parametros.py).
  // [etiqueta, decimales, cols] ; cols = [L1,L2,L3,N] (null si no aplica) o "CLAVE" (escalar)
@@ -109,8 +135,9 @@
   ["Potencia reactiva (VAr)",1,["AVAR","BVAR","CVAR",null]],
   ["Potencia aparente (VA)",1,["AVA","BVA","CVA",null]],
   ["Factor de potencia",3,["APF","BPF","CPF",null]],
-  ["THD tension (%)",2,["AVTHD","BVTHD","CVTHD",null]],
-  ["THD corriente (%)",2,["AITHD","BITHD","CITHD",null]],
+  ["THDv - tension (%)",2,["AVTHD","BVTHD","CVTHD",null]],
+  ["THDi - corriente (%)",2,["AITHD","BITHD","CITHD",null]],
+  ["THD general (%)",2,["ATHD","BTHD","CTHD",null]],
   ["Suma vectorial I (A)",3,"ISUMRMS"],
   ["Frecuencia (Hz)",2,"FREQ"]];
  var COLS=["L1","L2","L3","N"];
@@ -166,11 +193,15 @@
 
  // --- MQTT sobre WebSocket ---
  var client=mqtt.connect(BROKER,{reconnectPeriod:2000});
- client.on("connect",function(){client.subscribe(TOPIC);estado(true,"En linea (MQTT)");});
+ client.on("connect",function(){client.subscribe(TOPIC);client.subscribe(TOPIC_ARM);
+   estado(true,"En linea (MQTT)");});
  client.on("reconnect",function(){estado(false,"Reconectando...");});
  client.on("close",function(){estado(false,"Sin conexion");});
  client.on("error",function(){estado(false,"Error MQTT");});
- client.on("message",function(t,payload){try{onData(JSON.parse(payload.toString()));}catch(e){}});
+ client.on("message",function(t,payload){try{
+   if(t===TOPIC_ARM)onEspectro(JSON.parse(payload.toString()));
+   else onData(JSON.parse(payload.toString()));
+ }catch(e){}});
 
  // Watchdog: si la placa deja de publicar, avisar y generar el reporte.
  function limpiarTabla(){FILAS.forEach(function(f,ri){
@@ -241,4 +272,53 @@
      csv+=row.join(",")+"\n";});
    var blob=new Blob([csv],{type:"text/csv"});var a=document.createElement("a");
    a.href=URL.createObjectURL(blob);a.download="medidas.csv";a.click();}
+
+ // --- ARMONICOS (bajo demanda: pide el espectro y dibuja barras 1..50) ---
+ function abrirArmonicos(){var s=document.getElementById("selArm");
+   if(!s.options.length){CANALES_ARM.forEach(function(c){var o=document.createElement("option");
+     o.value=c[0];o.textContent=c[1]+"  ("+c[0]+")";s.appendChild(o);});}
+   document.getElementById("modalArm").classList.add("show");
+   dibujarArm();pedirArmonicos();}
+ function pedirArmonicos(){var canal=document.getElementById("selArm").value;
+   document.getElementById("armEstado").textContent="pidiendo "+canal+"...";
+   espArm=null;dibujarArm();
+   try{client.publish(TOPIC_ARM_REQ,JSON.stringify({canal:canal}));}catch(e){}
+   clearTimeout(espTimer);
+   espTimer=setTimeout(function(){if(!espArm)
+     document.getElementById("armEstado").textContent="sin respuesta (¿placa publicando?)";},6000);}
+ function thd(h){var s=0;for(var i=1;i<h.length;i++)s+=h[i]*h[i];
+   return Math.sqrt(s)/(h[0]||1)*100;}   // THD sobre h2..hN, ref h1
+ function onEspectro(e){if(!e||!e.h)return;espArm=e;
+   clearTimeout(espTimer);
+   document.getElementById("armEstado").textContent=
+     e.canal+" — THD "+thd(e.h).toFixed(2)+"%  ("+e.n+" armonicos)";
+   dibujarArm();}
+ function dibujarArm(){var cv=document.getElementById("cvArm"),x=cv.getContext("2d");
+   var w=cv.width,h=cv.height,ml=40,mb=22,mt=12;x.clearRect(0,0,w,h);
+   x.strokeStyle="#25456A";x.lineWidth=1;
+   for(var i=0;i<=4;i++){var y=mt+(h-mt-mb)*i/4;x.beginPath();x.moveTo(ml,y);x.lineTo(w-8,y);x.stroke();}
+   if(!espArm||!espArm.h){x.fillStyle="#7E97AE";x.font="13px Segoe UI";
+     x.fillText("Sin espectro. Toca 'Pedir espectro'.",w/2-110,h/2);return;}
+   var H=espArm.h;
+   // Escala Y sobre armonicos (excluye el fundamental h1=100 para ver el detalle).
+   var maxh=0;for(var k=1;k<H.length;k++)if(H[k]>maxh)maxh=H[k];
+   maxh=Math.max(maxh,1);var tope=Math.ceil(maxh*1.15);
+   x.fillStyle="#7E97AE";x.font="10px Consolas";
+   for(var g=0;g<=4;g++){var val=tope*(4-g)/4;var yy=mt+(h-mt-mb)*g/4;
+     x.fillText(val.toFixed(1),4,yy+3);}
+   var n=H.length,bw=(w-ml-10)/n;
+   for(var b=1;b<=n;b++){var v=H[b-1];
+     var bh=(b===1)?(h-mt-mb):(h-mt-mb)*Math.min(v,tope)/tope;  // h1 llena (referencia)
+     var px=ml+(b-1)*bw,py=h-mb-bh;
+     x.fillStyle=(b===1)?"#3A5F86":(b%2? "#4FA3E0":"#8CCBF7");
+     x.fillRect(px+0.5,py,Math.max(bw-1,1),bh);
+     if(b===1||b%5===0){x.fillStyle="#7E97AE";x.font="9px Consolas";
+       x.fillText(b,px+bw/2-4,h-8);}}
+   x.fillStyle="#8CCBF7";x.font="bold 12px Segoe UI";
+   x.fillText(espArm.canal+"  (h1=100% fuera de escala)",ml+6,mt+12);}
+ function descargarArm(){if(!espArm||!espArm.h){alert("Primero pedi un espectro.");return;}
+   var csv="armonico,porcentaje_fundamental\n";
+   espArm.h.forEach(function(v,i){csv+=(i+1)+","+v+"\n";});
+   var blob=new Blob([csv],{type:"text/csv"});var a=document.createElement("a");
+   a.href=URL.createObjectURL(blob);a.download="armonicos_"+espArm.canal+".csv";a.click();}
 </script></body></html>
