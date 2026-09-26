@@ -288,37 +288,54 @@
      document.getElementById("armEstado").textContent="sin respuesta (¿placa publicando?)";},6000);}
  function thd(h){var s=0;for(var i=1;i<h.length;i++)s+=h[i]*h[i];
    return Math.sqrt(s)/(h[0]||1)*100;}   // THD sobre h2..hN, ref h1
- function onEspectro(e){if(!e||!e.h)return;espArm=e;
-   clearTimeout(espTimer);
+ function ampli(pct){return (espArm&&typeof espArm.fund==="number")?(pct/100*espArm.fund):null;}
+ function onEspectro(e){if(!e||!e.h)return;espArm=e;clearTimeout(espTimer);
+   var fu=(typeof e.fund==="number")?("   ·   fund "+e.fund.toFixed(2)+" "+(e.unidad||"")):"";
    document.getElementById("armEstado").textContent=
-     e.canal+" — THD "+thd(e.h).toFixed(2)+"%  ("+e.n+" armonicos)";
-   dibujarArm();}
- function dibujarArm(){var cv=document.getElementById("cvArm"),x=cv.getContext("2d");
+     e.canal+" — THD "+thd(e.h).toFixed(2)+"%  ("+e.n+" arm.)"+fu;
+   dibujarArm(null);}
+ var armLay=null;   // geometria del ultimo dibujo (para el hover)
+ function dibujarArm(hl){var cv=document.getElementById("cvArm"),x=cv.getContext("2d");
    var w=cv.width,h=cv.height,ml=40,mb=22,mt=12;x.clearRect(0,0,w,h);
    x.strokeStyle="#25456A";x.lineWidth=1;
    for(var i=0;i<=4;i++){var y=mt+(h-mt-mb)*i/4;x.beginPath();x.moveTo(ml,y);x.lineTo(w-8,y);x.stroke();}
-   if(!espArm||!espArm.h){x.fillStyle="#7E97AE";x.font="13px Segoe UI";
+   if(!espArm||!espArm.h){armLay=null;x.fillStyle="#7E97AE";x.font="13px Segoe UI";
      x.fillText("Sin espectro. Toca 'Pedir espectro'.",w/2-110,h/2);return;}
    var H=espArm.h;
-   // Escala Y sobre armonicos (excluye el fundamental h1=100 para ver el detalle).
    var maxh=0;for(var k=1;k<H.length;k++)if(H[k]>maxh)maxh=H[k];
    maxh=Math.max(maxh,1);var tope=Math.ceil(maxh*1.15);
    x.fillStyle="#7E97AE";x.font="10px Consolas";
    for(var g=0;g<=4;g++){var val=tope*(4-g)/4;var yy=mt+(h-mt-mb)*g/4;
      x.fillText(val.toFixed(1),4,yy+3);}
-   var n=H.length,bw=(w-ml-10)/n;
+   var n=H.length,bw=(w-ml-10)/n;armLay={ml:ml,bw:bw,n:n};
    for(var b=1;b<=n;b++){var v=H[b-1];
      var bh=(b===1)?(h-mt-mb):(h-mt-mb)*Math.min(v,tope)/tope;  // h1 llena (referencia)
      var px=ml+(b-1)*bw,py=h-mb-bh;
-     x.fillStyle=(b===1)?"#3A5F86":(b%2? "#4FA3E0":"#8CCBF7");
+     x.fillStyle=(b===hl)?"#FFFFFF":((b===1)?"#3A5F86":(b%2?"#4FA3E0":"#8CCBF7"));
      x.fillRect(px+0.5,py,Math.max(bw-1,1),bh);
      if(b===1||b%5===0){x.fillStyle="#7E97AE";x.font="9px Consolas";
        x.fillText(b,px+bw/2-4,h-8);}}
    x.fillStyle="#8CCBF7";x.font="bold 12px Segoe UI";
-   x.fillText(espArm.canal+"  (h1=100% fuera de escala)",ml+6,mt+12);}
+   x.fillText(espArm.canal+"  (h1=100% fuera de escala)",ml+6,mt+12);
+   if(hl){var pct=H[hl-1],am=ampli(pct);                        // tooltip: % + amplitud
+     var txt="h"+hl+":   "+pct.toFixed(2)+" %"+
+       (am!=null?("     "+am.toFixed(3)+" "+(espArm.unidad||"")):"");
+     x.font="bold 12px Segoe UI";var tw=x.measureText(txt).width+16;
+     var bx=ml+(hl-1)*bw+bw/2-tw/2;bx=Math.max(ml,Math.min(bx,w-8-tw));
+     x.fillStyle="#0B1C2E";x.fillRect(bx,mt+18,tw,22);
+     x.strokeStyle="#4FA3E0";x.lineWidth=1;x.strokeRect(bx,mt+18,tw,22);
+     x.fillStyle="#EAF3FC";x.fillText(txt,bx+8,mt+33);}}
+ (function(){var c=document.getElementById("cvArm");if(!c)return;
+   c.addEventListener("mousemove",function(e){if(!armLay)return;
+     var r=c.getBoundingClientRect();var cx=(e.clientX-r.left)*(c.width/r.width);
+     var b=Math.floor((cx-armLay.ml)/armLay.bw)+1;
+     dibujarArm((b>=1&&b<=armLay.n)?b:null);});
+   c.addEventListener("mouseleave",function(){dibujarArm(null);});})();
  function descargarArm(){if(!espArm||!espArm.h){alert("Primero pedi un espectro.");return;}
-   var csv="armonico,porcentaje_fundamental\n";
-   espArm.h.forEach(function(v,i){csv+=(i+1)+","+v+"\n";});
+   var u=espArm.unidad||"";
+   var csv="armonico,porcentaje_fundamental,amplitud_"+(u||"abs")+"\n";
+   espArm.h.forEach(function(v,i){var am=ampli(v);
+     csv+=(i+1)+","+v+","+(am!=null?am.toFixed(4):"")+"\n";});
    var blob=new Blob([csv],{type:"text/csv"});var a=document.createElement("a");
    a.href=URL.createObjectURL(blob);a.download="armonicos_"+espArm.canal+".csv";a.click();}
 </script></body></html>
