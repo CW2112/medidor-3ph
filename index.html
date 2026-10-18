@@ -77,6 +77,7 @@
    <button onclick="cfgRefresco()">Tasa de refresco</button>
    <button onclick="abrirSeguimiento()">Seguimiento de variables</button>
    <button onclick="abrirArmonicos()">Armonicos</button>
+   <button onclick="abrirFasores()">Fasores</button>
    <button onclick="descargar()">Descarga de datos</button>
    <button onclick="verLogs()">Ver logs</button>
  </div>
@@ -112,12 +113,28 @@
    <div style="color:#7E97AE;font-size:11px;margin-top:6px">
      Barras en % del fundamental (h1 = 100 %). THD del canal calculado sobre h2..h50.</div>
  </div></div>
+ <div id="modalFas" class="modal"><div class="card" style="max-width:560px">
+   <div class="mtop"><b>Diagrama de fasores</b>
+     <span onclick="cerrarFas()">&times;</span></div>
+   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+     <button onclick="pedirFasores()" style="background:#204B75;color:#EAF3FC;border:none;
+       border-radius:8px;padding:7px 14px;font-family:inherit;font-weight:bold;cursor:pointer">
+       Actualizar</button>
+     <span id="fasEstado" style="color:#7E97AE;font-size:12px">—</span>
+   </div>
+   <canvas id="cvFas" width="440" height="440" style="width:440px;height:440px;max-width:100%"></canvas>
+   <div style="color:#7E97AE;font-size:11px;margin-top:6px">
+     Tensiones y corrientes con escalas independientes. 0° a la derecha, positivo antihorario,
+     referencia en la primera tensión válida. Se actualiza mientras esta vista está abierta.</div>
+ </div></div>
 </div>
 <script>
  var BROKER="wss://broker.hivemq.com:8884/mqtt";
  var TOPIC="medidor3ph/utnfra/9f2a/medidas";
  var TOPIC_ARM_REQ="medidor3ph/utnfra/9f2a/armonicos/req";  // pedido -> placa
  var TOPIC_ARM="medidor3ph/utnfra/9f2a/armonicos";          // espectro <- placa
+ var TOPIC_FAS_REQ="medidor3ph/utnfra/9f2a/fasores/req";    // pedido fasores -> placa
+ var TOPIC_FAS="medidor3ph/utnfra/9f2a/fasores";            // fasores <- placa
  document.getElementById("ftopic").textContent=TOPIC;
 
  // Canales con espectro de armonicos (ver firmware/parametros.py CANALES_ARM).
@@ -125,6 +142,8 @@
                   ["IA","Corriente Fa"],["IB","Corriente Fb"],["IC","Corriente Fc"]];
  var espArm=null;        // ultimo espectro recibido {canal,n,h:[...]}
  var espTimer=null;      // watchdog del pedido de espectro
+ var fasData=null;       // ultimos fasores {freq,mask,p:[12]}
+ var fasTimer=null;      // refresco periodico mientras la vista esta abierta
 
  // Nombres del front-end ADE9000 (ver firmware/parametros.py).
  // [etiqueta, decimales, cols] ; cols = [L1,L2,L3,N] (null si no aplica) o "CLAVE" (escalar)
@@ -194,12 +213,13 @@
  // --- MQTT sobre WebSocket ---
  var client=mqtt.connect(BROKER,{reconnectPeriod:2000});
  client.on("connect",function(){client.subscribe(TOPIC);client.subscribe(TOPIC_ARM);
-   estado(true,"En linea (MQTT)");});
+   client.subscribe(TOPIC_FAS);estado(true,"En linea (MQTT)");});
  client.on("reconnect",function(){estado(false,"Reconectando...");});
  client.on("close",function(){estado(false,"Sin conexion");});
  client.on("error",function(){estado(false,"Error MQTT");});
  client.on("message",function(t,payload){try{
    if(t===TOPIC_ARM)onEspectro(JSON.parse(payload.toString()));
+   else if(t===TOPIC_FAS)onFasores(JSON.parse(payload.toString()));
    else onData(JSON.parse(payload.toString()));
  }catch(e){}});
 
@@ -338,4 +358,51 @@
      csv+=(i+1)+","+v+","+(am!=null?am.toFixed(4):"")+"\n";});
    var blob=new Blob([csv],{type:"text/csv"});var a=document.createElement("a");
    a.href=URL.createObjectURL(blob);a.download="armonicos_"+espArm.canal+".csv";a.click();}
+
+ // --- FASORES (misma logica que el UART de la pantalla: Hz + 6 pares amp/angulo) ---
+ function abrirFasores(){document.getElementById("modalFas").classList.add("show");
+   dibujarFasores();pedirFasores();
+   clearInterval(fasTimer);fasTimer=setInterval(pedirFasores,1000);}  // refresca mientras esta abierto
+ function cerrarFas(){clearInterval(fasTimer);fasTimer=null;cerrar("modalFas");}
+ function pedirFasores(){document.getElementById("fasEstado").textContent="pidiendo...";
+   try{client.publish(TOPIC_FAS_REQ,"{}");}catch(e){}}
+ function onFasores(d){if(!d||!d.p)return;fasData=d;
+   var ok=0;for(var i=0;i<6;i++)if(d.mask&(1<<i))ok++;
+   document.getElementById("fasEstado").textContent=
+     "f "+(d.freq||0).toFixed(2)+" Hz · "+ok+"/6 canales";
+   if(document.getElementById("modalFas").classList.contains("show"))dibujarFasores();}
+ function dibujarFasores(){var cv=document.getElementById("cvFas"),x=cv.getContext("2d");
+   var w=cv.width,h=cv.height;x.clearRect(0,0,w,h);
+   var cx=w/2,cy=h/2+6,R=Math.min(w,h)/2-34;
+   // grilla: dos circulos + ejes
+   x.strokeStyle="#25456A";x.lineWidth=1;
+   x.beginPath();x.arc(cx,cy,R,0,2*Math.PI);x.stroke();
+   x.beginPath();x.arc(cx,cy,R*0.5,0,2*Math.PI);x.stroke();
+   x.beginPath();x.moveTo(cx-R,cy);x.lineTo(cx+R,cy);x.moveTo(cx,cy-R);x.lineTo(cx,cy+R);x.stroke();
+   x.fillStyle="#5E6B78";x.font="10px Consolas";x.fillText("0°",cx+R-2,cy-5);
+   x.fillText("90°",cx+4,cy-R+10);x.fillText("180°",cx-R+2,cy-5);x.fillText("-90°",cx+4,cy+R-3);
+   if(!fasData||!fasData.p){x.fillStyle="#7E97AE";x.font="13px Segoe UI";
+     x.fillText("Sin fasores. Toca 'Actualizar'.",cx-95,cy);return;}
+   var p=fasData.p;
+   var vmax=Math.max(p[0],p[2],p[4],1);          // escala de tension
+   var imax=Math.max(p[6],p[8],p[10],0.001);     // escala de corriente (independiente)
+   var VCOL="#4FA3E0",ICOL="#F5B301";
+   function vec(amp,ang,smax,color,label){
+     if(!(amp>0))return;                          // canal invalido -> no se dibuja
+     var r=amp/smax*R*0.92,a=ang*Math.PI/180;
+     var ex=cx+r*Math.cos(a),ey=cy-r*Math.sin(a);  // 0°=derecha, + antihorario
+     x.strokeStyle=color;x.fillStyle=color;x.lineWidth=2.6;
+     x.beginPath();x.moveTo(cx,cy);x.lineTo(ex,ey);x.stroke();
+     var ah=9,aa=0.42;                             // punta de flecha
+     x.beginPath();x.moveTo(ex,ey);
+     x.lineTo(ex-ah*Math.cos(a-aa),ey+ah*Math.sin(a-aa));
+     x.lineTo(ex-ah*Math.cos(a+aa),ey+ah*Math.sin(a+aa));
+     x.closePath();x.fill();
+     x.font="bold 12px Segoe UI";
+     x.fillText(label,cx+(r+16)*Math.cos(a)-7,cy-(r+16)*Math.sin(a)+4);}
+   vec(p[0],p[1],vmax,VCOL,"Va");vec(p[2],p[3],vmax,VCOL,"Vb");vec(p[4],p[5],vmax,VCOL,"Vc");
+   vec(p[6],p[7],imax,ICOL,"Ia");vec(p[8],p[9],imax,ICOL,"Ib");vec(p[10],p[11],imax,ICOL,"Ic");
+   x.font="12px Segoe UI";x.fillStyle=VCOL;x.fillText("■ Tension (max "+vmax.toFixed(0)+" V)",10,18);
+   x.fillStyle=ICOL;x.fillText("■ Corriente (max "+imax.toFixed(2)+" A)",10,36);
+   x.fillStyle="#7E97AE";x.fillText("f = "+(fasData.freq||0).toFixed(2)+" Hz",10,h-10);}
 </script></body></html>
